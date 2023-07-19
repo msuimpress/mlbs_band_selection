@@ -6,16 +6,16 @@ import scipy.io as sio
 from math import ceil
 
 # Initializing constants
-DATASET_NAME = 'UP'
+DATASET_NAME = 'IP'
 K = 10
 K_NUM = 1
 
-TRAINING_RATIO = 0.1                        # The ratio of the training dataset over the whole points.
+TRAINING_RATIO = 0.25                        # The ratio of the training dataset over the whole points.
 pmask_slope = 5
 sample_slope = 10
 BS = 30
 
-EPOCHS = 150
+EPOCHS = 200
 LR = 0.001
 BATCH_SIZE = 16
 
@@ -184,12 +184,13 @@ class UnderSample(tf.keras.layers.Layer):
 
 # Learning rate scheduler 
 def scheduler(epoch, lr):
-    if epoch == 50:
-        lr = lr / 10
     if epoch == 100:
+        lr = lr / 10
+    if epoch == 150:
         lr = lr / 10
     return lr
 
+# Importing and modifying data
 data_ori, labels_ori = read_data(DATASET_NAME)
 data_norm = normalize_dataset(data_ori)
 
@@ -205,14 +206,30 @@ X_test=np.squeeze(X_test, axis=2)
 
 X_train.shape[-1]
 
-Y_train = one_hot(train_y,num_classification )
-Y_test = one_hot(test_y,num_classification )
+Y_train = one_hot(train_y,num_classification)
+Y_train_int = np.argmax(Y_train, axis=1)
+Y_test = one_hot(test_y,num_classification)
 
 X_train,Y_train,train_loc=disorder(X_train,Y_train,train_loc)
 X_test,Y_test,test_loc=disorder(X_test,Y_test,test_loc)
 
 X_train = np.transpose(X_train, axes=(0,2,1))
 X_test = np.transpose(X_test, axes=(0,2,1))
+
+num_data = X_train.shape[0]  
+num_band = X_train.shape[1]             # Number of bandwidths
+num_class = Y_train.shape[1]
+number_class_label = []; class_weights = []
+for i in range(num_class):
+    number_class_label.append(len(np.where(Y_train_int == i)[0]))
+    class_weights.append(num_data/number_class_label[i])
+class_weights = np.array(class_weights)
+class_weights_norm = class_weights / np.sum(class_weights)
+class_weights_norm = np.sqrt(class_weights_norm)
+#class_weights_norm = np.square(class_weights_norm)
+class_weights_dic = {}
+for i in range(num_class):
+    class_weights_dic[i] = 100*class_weights_norm[i]
 
 print('Shape of the training images: ', X_train[0].shape)
 print('Shape of the test images: ', X_test[0].shape)
@@ -256,7 +273,8 @@ model.fit(x = X_train, y = Y_train,
           epochs=EPOCHS,
           batch_size=BATCH_SIZE,
           steps_per_epoch=ceil(training_input_num/BATCH_SIZE),
-          callbacks = [tf.keras.callbacks.LearningRateScheduler(scheduler)])
+          callbacks = [tf.keras.callbacks.LearningRateScheduler(scheduler)],
+          class_weight = class_weights_dic)
 
 model.save("hbs_mlbs_" + DATASET_NAME)
 np.save("image_train_" + DATASET_NAME, X_train);np.save("label_train_" + DATASET_NAME, Y_train)

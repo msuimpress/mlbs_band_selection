@@ -6,14 +6,15 @@ from sklearn.metrics import accuracy_score, confusion_matrix, cohen_kappa_score
 # Defining constants
 BS = 30
 
-DATASET = "IP"
+DATASET = "UP"
+TRAINING_RATIO = 0.1
 
 # Model and dataset addresses
-MODEL_ADDRESS = "hbs_mlbs_"+DATASET
-DATASE_ADDRESST = ["hbs_mlbs_"+DATASET+"\\image_train_"+DATASET+".npy",
-                   "hbs_mlbs_"+DATASET+"\\label_train_"+DATASET+".npy",
-                   "hbs_mlbs_"+DATASET+"\\image_test_"+DATASET+".npy",
-                   "hbs_mlbs_"+DATASET+"\\label_test_"+DATASET+".npy"]
+MODEL_ADDRESS = "hbs_cmcnn_"+DATASET
+DATASE_ADDRESST = ["hbs_cmcnn_"+DATASET+"\\image_train_"+DATASET+".npy",
+                   "hbs_cmcnn_"+DATASET+"\\label_train_"+DATASET+".npy",
+                   "hbs_cmcnn_"+DATASET+"\\image_test_"+DATASET+".npy",
+                   "hbs_cmcnn_"+DATASET+"\\label_test_"+DATASET+".npy"]
 
 # Loading the training dataset.
 model = tf.keras.models.load_model(MODEL_ADDRESS)
@@ -36,28 +37,31 @@ class_weights_dic = {}
 for i in range(num_class):
     class_weights_dic[i] = 100*class_weights_norm[i]
 
-"""svc_cw = compute_class_weight(class_weight = class_weights_dic, 
-                              classes = np.unique(label_train_int), 
-                              y = label_train_int)
-
-for i in range(num_class): print(len(np.where(label_train_int==i)[0]))"""
-
-# Separating the measurement layers from the overall model.
 layer_input = tf.keras.Input(shape=(num_band,1))
-layer_prob_mask = model.get_layer("prob_mask")
-layer_rescaled_mask = model.get_layer("rescaled_mask")
-layer_sampled_mask = model.get_layer("sampled_mask")
-layer_proxy_data = model.get_layer("proxy_data")
+a = model.get_layer(index=1)(layer_input)
+a = model.get_layer(index=2)(a)
+a = model.get_layer(index=3)(a)
+b = model.get_layer(index=4)(a)
+a = model.get_layer(index=5)(b)
+a = model.get_layer(index=6)(a)
+a = model.get_layer(index=7)(a)
+b = model.get_layer(index=8)(a)
+c = model.get_layer(index=9)(b)
 
-# Defining a new model for only measurement.
-x = layer_prob_mask(layer_input)
-y = layer_rescaled_mask(x)
-z = layer_sampled_mask(y)
-t = layer_proxy_data([layer_input, z])
-measurement_model = tf.keras.Model(inputs = layer_input, outputs = t)
+selection_model = tf.keras.Model(inputs=layer_input, outputs=c)
+bs_map = np.zeros(shape=num_band)
+for i in range(num_class):
+    image_class = image_train[np.where(label_train_int==i)]
+    preds = selection_model.predict(image_class)
+    preds_avg = np.average(preds, axis=0)
+    #thresh_class = np.sort(preds_avg)[-(round((i+1) * BS/num_class) - round((i) * BS/num_class))]
+    #class_map = np.where(preds_avg >= thresh_class, 1, 0)
+    bs_map = bs_map + preds_avg
+thresh_class = np.sort(bs_map)[-BS]
+bs_map = np.where(bs_map >= thresh_class, 1, 0)
 
-measurements_train = measurement_model.predict(image_train)
-measurements_train_zeroed = np.where(measurements_train < 0.001, 0, measurements_train)[:,:,0]
+measurements_train = np.multiply(image_train, np.tile(bs_map, (image_train.shape[0],1))[:,:,np.newaxis])
+measurements_train_zeroed = np.where(measurements_train < 0.0001, 0, measurements_train)[:,:,0]
 non_zero_index = np.where(measurements_train_zeroed[0] != 0)[0]
 measurements_train_selected = measurements_train_zeroed[:,non_zero_index]
 
@@ -76,8 +80,8 @@ image_test = np.load(DATASE_ADDRESST[2])
 label_test = np.load(DATASE_ADDRESST[3])
 label_test_int = np.argmax(label_test, axis=1)
 
-measurements_test = measurement_model.predict(image_test)
-measurements_test_zeroed = np.where(measurements_test < 0.001, 0, measurements_test)[:,:,0]
+measurements_test = np.multiply(image_test, np.tile(bs_map, (image_test.shape[0],1))[:,:,np.newaxis])
+measurements_test_zeroed = np.where(measurements_test < 0.0001, 0, measurements_test)[:,:,0]
 measurements_test_selected = measurements_test_zeroed[:,non_zero_index]
 
 predictions = classifier.predict_proba(measurements_test_selected)
