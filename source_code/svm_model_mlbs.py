@@ -6,7 +6,7 @@ from sklearn.metrics import accuracy_score, confusion_matrix, cohen_kappa_score
 # Defining constants
 BS = 30
 
-DATASET = "IP"
+DATASET = "UP"
 
 # Model and dataset addresses
 MODEL_ADDRESS = "hbs_mlbs_"+DATASET

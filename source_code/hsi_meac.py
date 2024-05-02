@@ -6,13 +6,11 @@ import scipy.io as sio
 from math import ceil
 
 # Initializing constants
-DATASET_NAME = 'IP'
+DATASET_NAME = 'UP'
 K = 10
 K_NUM = 1
 
-TRAINING_RATIO = 0.25                        # The ratio of the training dataset over the whole points.
-pmask_slope = 5
-sample_slope = 10
+TRAINING_RATIO = 0.1                        # The ratio of the training dataset over the whole points.
 BS = 30
 
 EPOCHS = 200
@@ -25,12 +23,16 @@ def read_data(dataset_name):                        # Loads Dataset
     if dataset_name == 'IP':
         image = sio.loadmat(path+"\\datasets\\Indian_pines_corrected.mat")["indian_pines_corrected"]
         label = sio.loadmat(path+"\\datasets\\Indian_pines_gt.mat")["indian_pines_gt"]
+        selected_bands = [57, 29, 1, 61, 90, 87, 75, 40, 35, 20, 18, 32, 88, 23, 34, 
+                          76, 97, 13, 33, 19, 74, 89, 2, 91, 26, 116, 85, 12, 30, 22]
     elif dataset_name == 'UP':
         image = sio.loadmat(path+'\\datasets\\PaviaU.mat')['paviaU']
         label = sio.loadmat(path+'\\datasets\\PaviaU_gt.mat')['paviaU_gt']
+        selected_bands = [96, 16, 63, 1, 3, 5, 34, 2, 7, 72, 45, 9, 11, 85, 18, 
+                          13, 83, 4, 43, 21, 78, 24, 8, 14, 27, 30, 56, 37, 101, 50]
     image = np.float64(image)
     label = np.array(label).astype(float)
-    return image, label
+    return image, label, selected_bands
 
 def normalize_dataset(data):                        # Dataset Normalization
     max_val = np.amax(data, axis=(0,1,2))
@@ -97,91 +99,6 @@ def windowFeature(data, loc, w):
             newdata[i, :, :,j] = f
     return newdata
 
-"""
-Functions of the probability mask as described in the paper.
-Each weight is passed into a sigmoid to convert them to a probability representation.
-"""
-class ProbMask(tf.keras.layers.Layer):
-    def __init__(self, slope, filter_size, **kwargs):
-        self.slope = tf.Variable(slope, dtype=tf.float32)
-        self.P = filter_size
-        
-        w_init = tf.random_uniform_initializer(minval=0, maxval=1)
-        self.w = tf.Variable(w_init(shape=(1, filter_size, 1)))
-        self.w = tf.Variable(- tf.math.log(1. / self.w - 1.) / self.slope)
-        super(ProbMask, self).__init__(**kwargs)
-        
-    def build(self, input_shape):
-        super(ProbMask, self).build(input_shape)
-        
-    def call(self, input_tensor):
-        weights = self.w 
-        return weights
-        #return tf.sigmoid(self.slope * weights)
-
-    def compute_output_shape(self, input_shape):
-        lst = list(input_shape)
-        lst[-1] = 1
-        return tuple(lst)
-    
-# The layer that rescales the weights given a sparsity level in probability map.
-class RescaleProbMask(tf.keras.layers.Layer):
-    def __init__(self, sparsity, **kwargs):
-        self.alpha = tf.constant(sparsity, dtype=tf.float32)
-        super(RescaleProbMask, self).__init__(**kwargs)
-
-    def build(self, input_shape):
-        self.num = input_shape[2]
-        super(RescaleProbMask, self).build(input_shape)
-
-    def call(self, input_tensor):
-        prob_map = self.force_sparsity(input_tensor, alpha = self.alpha)
-        return prob_map
-
-    def force_sparsity(self, pixel, alpha):
-        p = tf.math.reduce_mean(pixel, axis=1)
-        beta = (1 - alpha) / (1 - p)
-        le = tf.cast(tf.greater_equal(p, alpha), tf.float32)
-        return le * pixel * alpha / p + (1 - le) * (1 - beta * (1 - pixel))
-
-class ThresholdRandomMask(tf.keras.layers.Layer):
-    def __init__(self, slope = 12, **kwargs):
-        self.slope = None
-        if slope is not None:
-            self.slope = tf.Variable(slope, dtype=tf.float32) 
-        super(ThresholdRandomMask, self).__init__(**kwargs)
-
-    def build(self, input_shape):
-        filter_size = input_shape[1]
-        t_init = tf.random_uniform_initializer(minval=0, maxval=1)
-        threshold = tf.constant(t_init(shape=(1, filter_size, 1)))
-        self.thresh = threshold
-        super(ThresholdRandomMask, self).build(input_shape)
-
-    def call(self, inputs):
-        #thresh = tf.zeros_like(inputs)
-        if self.slope is not None:
-            return tf.sigmoid(self.slope * (inputs-self.thresh))
-        else:
-            return inputs > self.thresh
-
-    def compute_output_shape(self, input_shape):
-        return input_shape[0]
-
-# The layer that performs masking operation.
-class UnderSample(tf.keras.layers.Layer):
-    def __init__(self, **kwargs):
-        super(UnderSample, self).__init__(**kwargs)
-
-    def build(self, input_shape):
-        super(UnderSample, self).build(input_shape)
-
-    def call(self, inputs):
-        input_pix = inputs[0]
-        mask = inputs[1]
-        image_masked = tf.multiply(input_pix, mask)
-        return image_masked
-
 # Learning rate scheduler 
 def scheduler(epoch, lr):
     if epoch == 100:
@@ -191,7 +108,7 @@ def scheduler(epoch, lr):
     return lr
 
 # Importing and modifying data
-data_ori, labels_ori = read_data(DATASET_NAME)
+data_ori, labels_ori, sel_band = read_data(DATASET_NAME)
 data_norm = normalize_dataset(data_ori)
 
 train_x, train_y, train_loc, test_x, test_y, test_loc = separate_train_test(data_norm, labels_ori, TRAINING_RATIO)
@@ -201,15 +118,17 @@ num_classification = int(np.max(labels_ori))
 X_train = windowFeature(data_norm, train_loc, 1); X_test = windowFeature(data_norm, test_loc, 1)
 X_train = np.squeeze(X_train, axis=2); X_test = np.squeeze(X_test, axis=2)
 
+X_train.shape[-1]
+
 Y_train = one_hot(train_y, num_classification)
 Y_train_int = np.argmax(Y_train, axis=1)
 Y_test = one_hot(test_y, num_classification)
 
-X_train,Y_train,train_loc=disorder(X_train,Y_train,train_loc)
-X_test,Y_test,test_loc=disorder(X_test,Y_test,test_loc)
+X_train, Y_train, train_loc=disorder(X_train, Y_train, train_loc)
+X_test, Y_test, test_loc=disorder(X_test, Y_test, test_loc)
 
-X_train = np.transpose(X_train, axes=(0,2,1))
-X_test = np.transpose(X_test, axes=(0,2,1))
+X_train = np.transpose(X_train, axes=(0,2,1)); X_test = np.transpose(X_test, axes=(0,2,1))
+X_train = X_train[:,sel_band,:]; X_test = X_test[:,sel_band,:]
 
 num_data = X_train.shape[0]  
 num_band = X_train.shape[1]             # Number of bandwidths
@@ -235,16 +154,9 @@ print('Number of the classes',num_classification)
 "Code for model creation, compilation and training."
 training_input_num = X_train.shape[0]
 num_bands = X_train.shape[1]
+
 input_image = tf.keras.Input(shape=(num_bands,1), name='input_image')
-
-prob_mask_tensor = ProbMask(slope=pmask_slope,
-                            filter_size = num_bands,name='prob_mask')(input_image)
-thresh_tensor = RescaleProbMask(sparsity = BS/num_bands, name='rescaled_mask')(prob_mask_tensor) 
-tensor_mask = ThresholdRandomMask(slope = sample_slope, name='sampled_mask')(thresh_tensor) 
-
-last_tensor = UnderSample(name='proxy_data')([input_image, tensor_mask])
-
-X=tf.keras.layers.Conv1D(64, 15, activation='relu',padding='Same')(last_tensor)
+X=tf.keras.layers.Conv1D(64, 15, activation='relu',padding='Same')(input_image)
 X=tf.keras.layers.Conv1D(64, 15, activation='relu',padding='Same')(X)   
 X=tf.keras.layers.Conv1D(64, 15, activation='relu',padding='Same')(X)
 M=tf.keras.layers.MaxPooling1D(pool_size=2,strides=2, padding='Same')(X)
@@ -271,6 +183,6 @@ model.fit(x = X_train, y = Y_train,
           callbacks = [tf.keras.callbacks.LearningRateScheduler(scheduler)],
           class_weight = class_weights_dic)
 
-model.save("hbs_mlbs_" + DATASET_NAME)
+model.save("hbs_meac_" + DATASET_NAME)
 np.save("image_train_" + DATASET_NAME, X_train);np.save("label_train_" + DATASET_NAME, Y_train)
 np.save("image_test_" + DATASET_NAME, X_test);np.save("label_test_" + DATASET_NAME, Y_test)
